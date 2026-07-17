@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "mp4-muxer": "^3.3.0"
+    "mp4-muxer": "latest"
   },
   "devDependencies": {
     "vite": "^5.0.0"
