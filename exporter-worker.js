@@ -58,20 +58,19 @@ async function initializePipeline(config) {
     isFinalizing = false;
     pendingAckResolver = null;
 
-    // 1. Fallback matrix for WebCodecs video profile selection (Added VP9 software encoding fallback)
+    // 1. Fallback matrix for WebCodecs H.264 video profile selection
     const requestedVideoCodec = config.video.codec || 'avc1.4d002a';
     const fallbackVideoCodecs = [
         requestedVideoCodec,
-        'avc1.42e01f', // H.264 Constrained Baseline Profile - universal H.264 support
-        'vp09.00.10.08', // VP9 Profile 0, 8-bit - universal software encoding fallback in Chromium
+        'avc1.42e01f', // H.264 Constrained Baseline Profile - universal support
+        'vp09.00.10.08', // VP9 Profile 0, 8-bit - software fallback
         'avc1.4d001f', // H.264 Main Profile
         'avc1.64001f'  // H.264 High Profile
     ];
 
     let selectedVideoCodec = null;
-    let selectedAcceleration = 'prefer-software'; // Default to software (highly stable for portrait H.264)
+    let selectedAcceleration = 'prefer-software'; // Default to software
 
-    // Search preference: software encoding is prioritized to avoid buggy GPU hardware driver hangs
     const accelerationPreferences = ['prefer-software', 'no-preference', 'prefer-hardware'];
 
     for (const codec of fallbackVideoCodecs) {
@@ -105,7 +104,44 @@ async function initializePipeline(config) {
 
     console.log(`[Worker] Selected video codec: ${selectedVideoCodec} (Acceleration: ${selectedAcceleration})`);
 
-    // 2. Map selected video codec to mp4-muxer supported generic video codecs ("avc", "hevc", "vp9", "av1")
+    // 2. Fallback matrix for WebCodecs Audio Profile selection (AAC-LC compatibility check)
+    const requestedAudioCodec = config.audio ? (config.audio.codec || 'mp4a.40.2') : 'mp4a.40.2';
+    const fallbackAudioCodecs = [
+        requestedAudioCodec,
+        'mp4a.40.2',  // AAC-LC (Low Complexity) - highest mobile hardware support
+        'mp4a.40.5',  // HE-AAC
+        'mp4a.40.29'  // HE-AAC v2
+    ];
+
+    let selectedAudioCodec = null;
+
+    if (config.audio) {
+        for (const codec of fallbackAudioCodecs) {
+            try {
+                const support = await AudioEncoder.isConfigSupported({
+                    codec: codec,
+                    sampleRate: config.audio.sampleRate,
+                    numberOfChannels: config.audio.numberOfChannels,
+                    bitrate: config.audio.bitrate || 128000
+                });
+                if (support.supported) {
+                    selectedAudioCodec = codec;
+                    break;
+                }
+            } catch (e) {
+                console.warn(`[Worker] Audio config query failed for ${codec}:`, e);
+            }
+        }
+
+        if (!selectedAudioCodec) {
+            console.warn('[Worker] No supported AudioEncoder config found. Falling back to requested codec.');
+            selectedAudioCodec = requestedAudioCodec;
+        }
+    }
+
+    console.log(`[Worker] Selected audio codec: ${selectedAudioCodec}`);
+
+    // 3. Map selected video codec to mp4-muxer supported generic video codecs
     let muxerVideoCodec = 'avc';
     if (selectedVideoCodec.startsWith('avc1')) {
         muxerVideoCodec = 'avc';
@@ -117,11 +153,10 @@ async function initializePipeline(config) {
         muxerVideoCodec = 'av1';
     }
 
-    // 3. Map audio codec to mp4-muxer supported generic audio codecs ("aac", "opus")
+    // 4. Map selected audio codec to mp4-muxer supported generic audio codecs ("aac", "opus")
     let muxerAudioCodec = undefined;
     if (config.audio) {
         muxerAudioCodec = 'aac'; // default fallback
-        const selectedAudioCodec = config.audio.codec || 'mp4a.40.2';
         if (selectedAudioCodec.startsWith('mp4a')) {
             muxerAudioCodec = 'aac';
         } else if (selectedAudioCodec.startsWith('opus')) {
@@ -129,7 +164,7 @@ async function initializePipeline(config) {
         }
     }
 
-    // 4. Initialize Muxer
+    // 5. Initialize Muxer
     muxer = new Mp4Muxer.Muxer({
         target: new Mp4Muxer.ArrayBufferTarget(),
         video: {
@@ -146,7 +181,7 @@ async function initializePipeline(config) {
         fastStart: 'in-memory'
     });
 
-    // 5. Initialize VideoEncoder
+    // 6. Initialize VideoEncoder
     videoEncoder = new VideoEncoder({
         output: (chunk, metadata) => {
             console.log(`[Worker] Video Chunk Encoded. Size: ${chunk.byteLength}B, Type: ${chunk.type}`);
@@ -174,7 +209,7 @@ async function initializePipeline(config) {
         avc: selectedVideoCodec.startsWith('avc1') ? { format: 'avc' } : undefined
     });
 
-    // 6. Initialize AudioEncoder (Optional Context)
+    // 7. Initialize AudioEncoder (Optional Context)
     if (config.audio) {
         audioEncoder = new AudioEncoder({
             output: (chunk, metadata) => {
@@ -188,7 +223,7 @@ async function initializePipeline(config) {
         });
 
         audioEncoder.configure({
-            codec: config.audio.codec || 'mp4a.40.2',
+            codec: selectedAudioCodec,
             sampleRate: config.audio.sampleRate,
             numberOfChannels: config.audio.numberOfChannels,
             bitrate: config.audio.bitrate || 128000
@@ -208,9 +243,7 @@ function encodeVideoFrame(frame, timestamp, keyFrame) {
     videoEncoder.encode(frame, { keyFrame });
     frame.close(); // Crucial: Free GPU/CPU memory instantly
 
-    // Watermark Backpressure Check:
-    // If the encoder's internal queue size is below High Watermark (8), acknowledge immediately to keep the pipeline saturated.
-    // Otherwise, pause the rendering loop and defer the acknowledgement until the queue drains.
+    // Watermark Backpressure Check
     if (videoEncoder.encodeQueueSize < 8) {
         self.postMessage({ type: 'FRAME_ACK', timestamp: timestamp });
     } else {
@@ -240,7 +273,7 @@ function promiseWithTimeout(promise, ms, timeoutErrorMsg) {
         }, ms);
     });
     return Promise.race([promise, timeoutPromise]).then((res) => {
-        clearTimeout(timeoutId);
+        timeoutId && clearTimeout(timeoutId);
         return res;
     });
 }
