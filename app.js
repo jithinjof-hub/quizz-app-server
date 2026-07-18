@@ -1194,7 +1194,7 @@ async function startVideoExport() {
   el.progressBar.style.background = "linear-gradient(90deg, var(--accent-purple) 0%, var(--accent-cyan) 100%)"; // reset color in case it was red before
 
   try {
-    const audioRate = 44100;
+    const audioRate = 48000;
     const rate = exportTemplate.voiceSpeed;
     const gender = exportTemplate.voiceGender;
 
@@ -1357,7 +1357,7 @@ async function runFramesRenderLoop(worker, audioSamples, audioRate, offsets, tot
     const chunkTimestamp = Math.round((offset / audioRate) * 1000000);
 
     const audioData = new AudioData({
-      format: 'f32',
+      format: 'f32-planar',
       sampleRate: audioRate,
       numberOfFrames: size,
       numberOfChannels: 1,
