@@ -10,7 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "mp4-muxer": "latest"
+    "google-tts-api": "^2.0.2",
+    "mp4-muxer": "^3.3.0"
   },
   "devDependencies": {
     "vite": "^5.0.0"
